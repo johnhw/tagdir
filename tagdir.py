@@ -1,4 +1,5 @@
-from pathlib import Path
+from pathlib import Path 
+import pathlib 
 import os
 import sys
 import json
@@ -15,7 +16,6 @@ from textual.reactive import reactive
 from rich.table import Table
 from rich.text import Text
 
-# TAG_COLORS = ["#264653", "#2A9D8F", "#E9C46A", "#F4A261", "#E76F51"]
 TAG_COLORS = []
 
 class History(Static):
@@ -38,11 +38,6 @@ class History(Static):
         self.update(render_table)
 
 
-@lru_cache(1024)
-def get_fixed_tag_colors(tag):
-    c = int(hashlib.sha256(tag.encode()).hexdigest()
-            [:4], 16) % len(TAG_COLORS)
-    return TAG_COLORS[c]
 
 @lru_cache(None)
 def get_tag_colors(tag):
@@ -81,7 +76,8 @@ class TagDir(App):
     CSS_PATH = "tagdir.css"
     BINDINGS = [("escape", "quit", "Quit"), ("insert", "newtag", "Add/modify/delete tag"),
                 ("ctrl+z", "undo", "Undo last move"),
-                ("ctrl+y", "redo", "Redo last undo")]
+                ("ctrl+y", "redo", "Redo last undo"),
+                ("tab", "filter", "Set current filter"),]
 
     def read_tags(self) -> dict:
         """Read the tags file."""
@@ -104,17 +100,24 @@ class TagDir(App):
         self.history = []
         self.redo_history = []
         self.file_cache = reactive([])
+        self.glob_filter = "*"
 
     def file_filter(self, name):
         """Filter out files that we don't want to show."""
-        return True 
+        if name=="tags.json":
+            return False
+        return pathlib.PurePath(name).match(self.glob_filter)
+        
 
     def init_paths(self):
         """Initialize the paths."""
-        self.files = [p for p in Path.glob(self.base_path, "*") if p.is_file() and self.file_filter(p.name) and not p.name=='tags.json']   
+        self.file_label.update(f"Files ({self.glob_filter})")
+        self.files = [p for p in Path.glob(self.base_path, "*") if p.is_file() and self.file_filter(p.name)]   
         self.file_names = [f.name for f in self.files]
         self.file_cache = [ListItem(Label(f.name)) for f in self.files]
-        self.file_list = ListView(*self.file_cache)        
+        self.file_list.clear()
+        for item in self.file_cache:
+            self.file_list.append(item)        
 
     def make_tag_label(self, t):
         """Make a tag label, with the auto-colouring enabled."""
@@ -134,20 +137,24 @@ class TagDir(App):
         self.init()
         # can be "none", "newtag", "newtag2"
         self.key_mode = "none"
+        self.file_label = Label("Files", classes="section-label")
+        
         self.action_label = Label("---", classes="action-label")
         yield self.action_label
-
+        
         self.file_list = ListView(classes='file-list')
-        self.init_paths()
         
         self.taglist = ListView(classes='tag-list')
         self.taglist.can_focus = False 
         self.update_tags()
         self.history_widget = History(classes="history-list")
-        yield Horizontal(Vertical(Vertical(Label("Files", classes="section-label"), self.file_list, classes="box"),  classes="column"),
+        self.file_list = ListView()
+        self.init_paths()
+        yield Horizontal(Vertical(Vertical(self.file_label, self.file_list, classes="box"),  classes="column"),
                          Vertical(Vertical(Label("Tags", classes="section-label"), self.taglist, classes="box"),
-                                  Vertical(Label("History", classes="section-label"), self.history_widget, classes="box"),  classes="column"))
+                                  Vertical(Label("History", classes="section-label"), self.history_widget, classes="box"),  classes="column"), classes="main")
         yield Footer()
+        
 
     def update_tags(self):
         self.taglist.clear()
@@ -162,16 +169,20 @@ class TagDir(App):
                     if event.key == tag:
                         file = self.files[self.file_list.index]                                  
                         self.move_file(tag, file)
-        # we are adding a newtag
-        if self.key_mode=="newtag":
-            # abort and don't create the label if escape is pressed
-            if event.key == "escape":
+
+        if event.key == "escape":
+            if self.key_mode == "newtag" or self.key_mode=="filter":
+                if self.key_mode=="newtag":
+                    self.key_input.remove()
+                if self.key_mode=="filter":
+                    self.filter_box.remove()
                 self.key_mode = "none"
-                self.update_status("Aborted")    
-                self.key_input.remove()         
+                self.update_status("Aborted")
                 event.prevent_default()
-            else:
-                # otherwise, this becomes the new hotkey
+        else:
+            # we are adding a newtag
+            if self.key_mode=="newtag":
+                # this becomes the new hotkey
                 k = str(event.key)                    
                 self.keyname.update(k)
                 self.keyname.text = k                 
@@ -189,24 +200,31 @@ class TagDir(App):
             c = get_tag_colors(tag_key)
             return f"[{c}][bold]({tag_key})[/bold] {tag_path}[/{c}]"
         # re-enable hotkeys
-        self.key_mode = "none"   
-        tag_key = self.keyname.text  
-        tag_path = self.tagname.value  
-        get_tag_colors(tag_key)
-        # blank path deletes the tag
-        if tag_path=="":            
-            self.update_status(f"Deleted tag: {tag_text(tag_key)}", type="warning")
-            del self.tags[tag_key]
-        else:
-            # otherwise, add or update the tag            
-            if tag_key in self.tags:                
-                self.update_status(f"Updated tag: {tag_text(tag_key)}", type="info")
+        
+        if self.key_mode == "newtag2":
+            tag_key = self.keyname.text  
+            tag_path = self.tagname.value  
+            get_tag_colors(tag_key)
+            # blank path deletes the tag
+            if tag_path=="":            
+                self.update_status(f"Deleted tag: {tag_text(tag_key)}", type="warning")
+                del self.tags[tag_key]
             else:
-                self.update_status(f"Added tag: {tag_text(tag_key)}", type="info")                
-            self.tags[tag_key] = tag_path     
-        self.update_tags()
-        # remove the input box
-        self.key_input.remove()
+                # otherwise, add or update the tag            
+                if tag_key in self.tags:                
+                    self.update_status(f"Updated tag: {tag_text(tag_key)}", type="info")
+                else:
+                    self.update_status(f"Added tag: {tag_text(tag_key)}", type="info")                
+                self.tags[tag_key] = tag_path     
+            self.update_tags()
+            # remove the input box
+            self.key_input.remove()
+        if self.key_mode == "filter":
+            self.glob_filter = self.filter_input.value
+            self.init_paths()
+            self.update_status(f"Filter: {self.glob_filter}", type="info")
+            self.filter_box.remove()
+        self.key_mode = "none"   
         self.file_list.focus()
 
     def move(self, file, dest):
@@ -301,13 +319,24 @@ class TagDir(App):
         else:
             self.update_status("No more history to redo.", type="warning")
 
+    def action_filter(self) -> None:        
+        if self.key_mode == "none":
+            self.key_mode = "filter"
+            self.filter_name = Label("File filter?", id="filtername", classes="filtername")
+            self.filter_input = Input(id="filter", placeholder="", classes="filter")
+            self.filter_box = Horizontal(self.filter_name, self.filter_input, classes="topbox")
+            self.mount(self.filter_box, before=self.action_label)
+            self.filter_input.text = self.glob_filter
+            self.filter_input.focus()
+
     def action_newtag(self) -> None:    
-        self.key_mode = "newtag"        
-        self.tagname = Input(id="tagname", placeholder="[tag name]", classes="tagname")
-        self.keyname = Label("Key?", id="keyname", classes="keyname")
-        self.key_input = Horizontal(self.keyname, self.tagname)
-        self.mount(self.key_input, before=self.action_label)
-        self.keyname.focus()
+        if self.key_mode=="none":
+            self.key_mode = "newtag"        
+            self.tagname = Input(id="tagname", placeholder="[tag name]", classes="tagname")
+            self.keyname = Label("Key?", id="keyname", classes="keyname")
+            self.key_input = Horizontal(self.keyname, self.tagname, classes="topbox")
+            self.mount(self.key_input, before=self.action_label)
+            self.keyname.focus()
 
 
 def launch_tagdir():

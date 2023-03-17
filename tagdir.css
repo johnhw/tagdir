@@ -1,42 +1,61 @@
 .directory-tree {
-    height:20;
+    height: 20;
 }
 
-.action-label {    
+.action-label {
     min-width: 100%;
     border: solid #F2D492;
     background: #202C39;
 }
+
 
 .keyname {
     border: solid #F2D492;
     width: 30%;
 }
 
-.tagname
-{
+.filtername {
+    border: solid #F2D492;
+    width: 30%;
+}
+
+.filter {
     border: solid #F2D492;
     width: 70%;
 }
 
-.column
-{
-    width: 1fr;    
+.topbox {
+    max-height: 4;
+    min-height: 4;
+    background: #283845;
 }
 
-.box 
-{
+.main {}
+
+.tagname {
+    border: solid #F2D492;
+    width: 70%;
+}
+
+.column {
+    width: 1fr;
+}
+
+.box {
     border: solid white;
-    background:#283845;
-}
-.section-label 
-{
-    background:#202C39;
-    content-align:center middle;
-    min-width: 100%;    
+    background: #283845;
 }
 
-body 
-{
-    background:#283845;
+.section-label {
+    background: #202C39;
+    content-align: center middle;
+    min-width: 100%;
+}
+
+.action_label {
+    min-height: 3;
+}
+
+body {
+    background: #283845;
 }

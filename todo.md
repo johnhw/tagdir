@@ -1,2 +1,2 @@
 ## Todo
-* Add filtering
+* fix mode disaster and height issues
