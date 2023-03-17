@@ -2,6 +2,8 @@ from pathlib import Path
 import os
 import sys
 import json
+import colorsys
+import random 
 from functools import lru_cache
 from textual.app import App, ComposeResult
 from textual.widgets import Footer
@@ -12,9 +14,9 @@ import hashlib
 from textual.reactive import reactive
 from rich.table import Table
 from rich.text import Text
-import random
 
-TAG_COLORS = ["#264653", "#2A9D8F", "#E9C46A", "#F4A261", "#E76F51"]
+# TAG_COLORS = ["#264653", "#2A9D8F", "#E9C46A", "#F4A261", "#E76F51"]
+TAG_COLORS = []
 
 class History(Static):
     max_lines = 6
@@ -37,11 +39,33 @@ class History(Static):
 
 
 @lru_cache(1024)
-def get_tag_colors(tag):
+def get_fixed_tag_colors(tag):
     c = int(hashlib.sha256(tag.encode()).hexdigest()
             [:4], 16) % len(TAG_COLORS)
     return TAG_COLORS[c]
 
+@lru_cache(None)
+def get_tag_colors(tag):
+    """Hash a tag, then convert it to a color."""
+    seed = int(hashlib.sha256(tag.encode()).hexdigest()[:8], 16)
+    rnd = random.Random(seed)
+    distance = 0
+    max_iters = 0
+    while distance <2 and max_iters < 100:
+        # regenerate colors until we get a distinct-ish one
+        hue = rnd.random()
+        saturation = rnd.uniform(0.4, 0.9)
+        brightness = rnd.uniform(0.6, 0.8)        
+        r, g, b = colorsys.hsv_to_rgb(hue, saturation, brightness)
+        if len(TAG_COLORS) == 0:
+            distance = 3
+        else:
+            # compute min distance to all of a TAG_COLORS
+            distance = min([abs(r - r2) + abs(g - g2) + abs(b - b2) for r2, g2, b2 in TAG_COLORS])
+        max_iters += 1
+
+    TAG_COLORS.append((r,g,b))    
+    return f'#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}'
 
 class KeyLabel(Label):
     def on_key(self, event) -> None:
@@ -55,14 +79,14 @@ class TagDir(App):
 
 
     CSS_PATH = "tagdir.css"
-    BINDINGS = [("escape", "quit", "Quit"), ("insert", "newtag", "Add/modify tag"),
+    BINDINGS = [("escape", "quit", "Quit"), ("insert", "newtag", "Add/modify/delete tag"),
                 ("ctrl+z", "undo", "Undo last move"),
-                ("ctrl+y", "redo", "Redo last undo"), ("ctrl+t", "TEST", "TEST")]
+                ("ctrl+y", "redo", "Redo last undo")]
 
     def read_tags(self) -> dict:
         """Read the tags file."""
         try:
-            with open("tags.json", "r") as f:
+            with open(self.base_path / "tags.json", "r") as f:
                 tags = json.load(f)
         except FileNotFoundError:
             tags = {}
@@ -70,21 +94,24 @@ class TagDir(App):
 
     def write_tags(self):
         """Write the tags file."""
-        with open("tags.json", "w") as f:
+        with open(self.base_path / "tags.json", "w") as f:
             json.dump(self.tags, f)
 
     def init(self):
         """Initialize the application."""
-        self.tags = self.read_tags()
         self.base_path = Path.cwd() if len(sys.argv) == 1 else Path(sys.argv[1])        
+        self.tags = self.read_tags()        
         self.history = []
         self.redo_history = []
         self.file_cache = reactive([])
 
-    
+    def file_filter(self, name):
+        """Filter out files that we don't want to show."""
+        return True 
+
     def init_paths(self):
         """Initialize the paths."""
-        self.files = [p for p in Path.glob(self.base_path, "*") if p.is_file()]   
+        self.files = [p for p in Path.glob(self.base_path, "*") if p.is_file() and self.file_filter(p.name) and not p.name=='tags.json']   
         self.file_names = [f.name for f in self.files]
         self.file_cache = [ListItem(Label(f.name)) for f in self.files]
         self.file_list = ListView(*self.file_cache)        
@@ -114,6 +141,7 @@ class TagDir(App):
         self.init_paths()
         
         self.taglist = ListView(classes='tag-list')
+        self.taglist.can_focus = False 
         self.update_tags()
         self.history_widget = History(classes="history-list")
         yield Horizontal(Vertical(Vertical(Label("Files", classes="section-label"), self.file_list, classes="box"),  classes="column"),
@@ -127,120 +155,151 @@ class TagDir(App):
             self.taglist.append(self.make_tag_label(tag))
         self.write_tags()
 
-    def action_TEST(self):
-        fname = "".join([random.choice("abcdefghijklmnopqrstuvwxyz") for i in range(8)]) + ".txt"
-        with open(fname, "w") as f:
-            f.write("TEST")
-        self.init_paths()    
-
     def on_key(self, event):
         if self.key_mode=="none":
+            # look for a key mapped to a tag
             for tag in self.tags:           
                     if event.key == tag:
                         file = self.files[self.file_list.index]                                  
-                        self.move_file(tag, file, self.tags[tag])
+                        self.move_file(tag, file)
+        # we are adding a newtag
         if self.key_mode=="newtag":
+            # abort and don't create the label if escape is pressed
             if event.key == "escape":
                 self.key_mode = "none"
                 self.update_status("Aborted")    
                 self.key_input.remove()         
                 event.prevent_default()
             else:
+                # otherwise, this becomes the new hotkey
                 k = str(event.key)                    
                 self.keyname.update(k)
-                self.keyname.text = k 
+                self.keyname.text = k                 
                 if k in self.tags:
                     self.tagname.value = self.tags[k]
                 self.tagname.focus()
+                # and now enable keys to go to the text box
                 self.key_mode = "newtag2"
                 event.prevent_default()
+
+    
                     
     def on_input_submitted(self, message):                
+        def tag_text(tag_key):
+            c = get_tag_colors(tag_key)
+            return f"[{c}][bold]({tag_key})[/bold] {tag_path}[/{c}]"
+        # re-enable hotkeys
         self.key_mode = "none"   
         tag_key = self.keyname.text  
         tag_path = self.tagname.value  
-        c = get_tag_colors(tag_key)
+        get_tag_colors(tag_key)
+        # blank path deletes the tag
         if tag_path=="":            
-            self.update_status(f"Deleted tag: ([bold][{c}]{tag_key}[/{c}][/bold])")
+            self.update_status(f"Deleted tag: {tag_text(tag_key)}", type="warning")
             del self.tags[tag_key]
         else:
-            self.tags[tag_key] = tag_path     
-            if tag_key in self.tags:
-                self.update_status(f"Updated tag: ([bold][{c}]{tag_key}[/{c}][/bold]) [{c}]{self.tags[tag_key]}[/{c}]")
+            # otherwise, add or update the tag            
+            if tag_key in self.tags:                
+                self.update_status(f"Updated tag: {tag_text(tag_key)}", type="info")
             else:
-                self.update_status(f"Added tag: ([bold][{c}]{tag_key}[/{c}][/bold]) [{c}]{self.tags[tag_key]}[/{c}]")
-                
-        
-        
+                self.update_status(f"Added tag: {tag_text(tag_key)}", type="info")                
+            self.tags[tag_key] = tag_path     
         self.update_tags()
+        # remove the input box
         self.key_input.remove()
+        self.file_list.focus()
 
     def move(self, file, dest):
-        
+        """Actually move the file from file to dest."""
         try:
             os.rename(self.base_path / Path(file), self.base_path / Path(dest))
         except OSError:
-            self.update_status(f"[red] Error moving file: {file.name} to {dest} [/red]")
+            self.update_status(f"Error moving file: {file.name} to {dest}", type="error")
             return False        
         self.file_list.focus()
         return True
 
-    def move_file(self, tag, file, dest):
+    def move_file(self, tag, file):
+        """Move the file to the destination given the tag, the file and the destination directory."""
+        dest = self.tags[tag]
+        # make sure the destination exists
         if not (Path(self.base_path) / Path(dest)).exists():
             (Path(self.base_path) / Path(dest)).mkdir(parents=True, exist_ok=True)            
         success = self.move(file, Path(dest) / Path(file.name))
         if success:
-            
+            # update the display and the caches            
             ix = self.file_names.index(file.name)
             elt = self.file_cache[ix]
             elt.remove()
             self.file_cache.pop(ix)
             self.file_names.pop(ix)
             self.files.pop(ix)
+            # add it to the history for undo
             self.history.append([tag, file, dest])
             self.history_widget.set_history(self.history)
             self.file_list.index = ix
+            # highlight the right file
             self.file_list.post_message_no_wait(ListView.Highlighted(self.file_list, ix))
+            # update the status
             c = get_tag_colors(tag)
-            self.update_status(f"([bold][{c}]{tag}[/{c}][/bold]) {file} -> [{c}]{self.tags[tag]}[/{c}]")      
+            self.update_status(f"([bold][{c}]{tag}[/{c}][/bold]) {file} -> [{c}]{self.tags[tag]}[/{c}]", type="success")      
+        else:
+            self.update_status(f"Error moving file: {file.name} to {self.tags[tag]}", type="error")
         
         
     def on_mount(self):
+        # start with the files focused!
         self.file_list.focus()
 
     def action_quit(self) -> None:
         exit(0)
 
-    def update_status(self, status):
+    def update_status(self, status, type="info"):
+        # flash the status bar white, then back to the default after 200ms
+        if type=="info":
+            status = status 
+        elif type=="error":
+            status = f"[red]{status}[/red]"
+        elif type=="warning":
+            status = f"[yellow]{status}[/yellow]"
+        elif type=="success":
+            status = f"[green]{status}[/green]"
         self.action_label.update(status)
         self.action_label.styles.background = "white"
         self.action_label.styles.animate("background", value=self.action_label._css_styles.background, duration=0.2)
 
     def action_undo(self) -> None:
+        """Undo the last move in the history."""
         if len(self.history)>0:
             last = self.history[-1]
             success = self.move(Path(last[2]) / Path(last[1].name), Path(last[1]))            
-            if success:
-                self.update_status(f"Undo: {last[1]} <- {last[2]}")
+            if success:                
                 self.history.pop()
                 self.redo_history.append(last)   
                 self.history_widget.set_history(self.history)   
-                self.file_list.focus()                                     
+                self.file_list.focus()      
+                self.update_status(f"Undo: {last[1]} <- {last[2]}", type="success")
+            else:
+                self.update_status(f"Error undoing move: {last[1]} <- {last[2]}", type="error")
+
         else:
-            self.update_status("No more history to undo.")
+            self.update_status("No more history to undo.", type="warning")
 
     def action_redo(self):
         if len(self.redo_history)>0:
             last = self.redo_history[-1]
             success = self.move(Path(last[1]), Path(last[2]) / Path(last[1].name))            
             if success:
-                self.update_status(f"Redo: {last[1]} -> {last[2]}")
+                
                 self.redo_history.pop()
                 self.history.append(last)            
                 self.history_widget.set_history(self.history)
                 self.file_list.focus()
+                self.update_status(f"Redo: {last[1]} -> {last[2]}", type="success")
+            else:
+                self.update_status(f"Error redoing move: {last[1]} -> {last[2]}", type="error")
         else:
-            self.update_status("No more history to redo.")
+            self.update_status("No more history to redo.", type="warning")
 
     def action_newtag(self) -> None:    
         self.key_mode = "newtag"        

@@ -1,0 +1,42 @@
+.directory-tree {
+    height:20;
+}
+
+.action-label {    
+    min-width: 100%;
+    border: solid #F2D492;
+    background: #202C39;
+}
+
+.keyname {
+    border: solid #F2D492;
+    width: 30%;
+}
+
+.tagname
+{
+    border: solid #F2D492;
+    width: 70%;
+}
+
+.column
+{
+    width: 1fr;    
+}
+
+.box 
+{
+    border: solid white;
+    background:#283845;
+}
+.section-label 
+{
+    background:#202C39;
+    content-align:center middle;
+    min-width: 100%;    
+}
+
+body 
+{
+    background:#283845;
+}
